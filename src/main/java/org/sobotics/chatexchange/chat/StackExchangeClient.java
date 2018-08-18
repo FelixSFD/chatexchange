@@ -79,26 +79,25 @@ public class StackExchangeClient implements AutoCloseable {
 	 * Logs in to s given site
 	 * @param email The user's e-mail-address
 	 * @param password The password
-	 * @param The host of the main site (NOT the chat.*! Use ChatHost.getName())
+	 * @param host {@link ChatHost} of the {@link Room}
+	 * @throws ChatLoginException if the login fails
 	 * */
-	private void seLogin(String email, String password, String host) throws IOException {
-		String originalHost = host;
+	private void seLogin(String email, String password, ChatHost host) throws IOException, ChatLoginException {
+		String originalHost = host.getName();
+		String loginHost = host.getLoginHost();
 		
-		if (host.equalsIgnoreCase(ChatHost.STACK_EXCHANGE.getName())) {
-			host = ChatHost.META_STACK_EXCHANGE.getName();
-		}
 		
 		//The login-form has a hidden field called "fkey" which needs to be sent along with the mail and password
-		Response response = httpClient.get("https://"+host+"/users/login", cookies);
+		Response response = httpClient.get("https://"+loginHost+"/users/login", cookies);
 		String fkey = response.parse().select("input[name='fkey']").val();
 		
-		response = httpClient.post("https://"+host+"/users/login", cookies, "email", email, "password", password, "fkey", fkey);
+		response = httpClient.post("https://"+loginHost+"/users/login", cookies, "email", email, "password", password, "fkey", fkey);
 		
 		//Create account on that site if necessary
 		Element formElement = response.parse().getElementById("logout-user");
 		if (formElement != null) {
 			if (!this.autoCreateAccount) {
-				throw new IllegalStateException("Unable to login to Stack Exchange. The user does not have an account on " + originalHost);
+				throw new ChatLoginException(host, "The user does not have an account on this site!");
 			} // if autoCreate
 			
 			Elements formInputs = formElement.getElementsByTag("input");
@@ -117,21 +116,27 @@ public class StackExchangeClient implements AutoCloseable {
 			
 			String[] formDataArray = formData.toArray(new String[formData.size()]);
 			
-			String formUrl = "https://" + host + formElement.attr("action");
+			String formUrl = "https://" + loginHost + formElement.attr("action");
 			
 			Response formResponse = httpClient.post(formUrl, cookies, formDataArray);
 			if (formResponse.parse().getElementsByClass("js-inbox-button").first() == null) {
 				LOGGER.debug(formResponse.parse().html());
-				throw new IllegalStateException("Unable to create account on " + host + "! Please create the account manually.");
+				throw new ChatLoginException(host, "Unable to create account! Please create the account manually.");
 			} // if
 		} // if
 		
+		
+		//Check for captcha
+		Element captchaElement = response.parse().getElementById("nocaptcha-form");
+		if (captchaElement != null) {
+			throw new ChatLoginException(host, "Captcha found! Please wait some time before trying to login again.");
+		}
 		
 		// check if login succeeded
 		Response checkResponse = httpClient.get("https://"+originalHost+"/users/current", cookies);
 		if (checkResponse.parse().getElementsByClass("js-inbox-button").first() == null) {
 			LOGGER.debug(checkResponse.parse().html());
-			throw new IllegalStateException("Unable to login to Stack Exchange. (Site: " + originalHost + " via " + host + ")");
+			throw new ChatLoginException(host, "Maybe your login credentials are wrong.");
 		} // if
 	} // seLogin
 
@@ -163,10 +168,9 @@ public class StackExchangeClient implements AutoCloseable {
 	 * @param host Host of the chat room to join.
 	 * @param roomId Id of the room to join.
 	 * @return <code>Room</code> joined.
+	 * @throws ChatLoginException when the login failed
 	 */
-	public Room joinRoom(ChatHost host, int roomId) {
-		String mainSiteHost = host.getName();
-		
+	public Room joinRoom(ChatHost host, int roomId) throws ChatLoginException {
 		boolean alreadyLoggedIn = false;
 		
 		for (Room room : this.rooms) {
@@ -179,10 +183,10 @@ public class StackExchangeClient implements AutoCloseable {
 		if (!alreadyLoggedIn) {
 			//not logged in on that site yet
 			try {
-				this.seLogin(email, password, mainSiteHost);
+				this.seLogin(email, password, host);
 			} catch (IOException e) {
-				LOGGER.error("Unable to login on " + mainSiteHost + " for " + host.getBaseUrl(), e);
-				throw new ChatOperationException("Login to " + mainSiteHost + " failed!");
+				LOGGER.error("Login failed due to IOException!", e);
+				throw new ChatLoginException(host, "IOException: " + e.getMessage());
 			}
 		}
 		
